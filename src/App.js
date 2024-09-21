@@ -27,18 +27,51 @@ export default App; */
 import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import { Moon, Sun } from 'lucide-react';
-//import { Switch } from '@/components/ui/switch';
 import { Switch } from './switch';
 
 const THRESHOLD_PRICE = 0.009; // €/kWh
 const YELLOW_THRESHOLD = THRESHOLD_PRICE * 1.25;
 const RED_THRESHOLD = THRESHOLD_PRICE * 1.5;
 
-const generatePrices = () => {
-  return Array.from({ length: 24 }, (_, i) => ({
-    hour: i,
-    price: Math.random() * 0.015 + 0.005, // Random price between 0.005 and 0.02 €/kWh
-  }));
+const formatDate = (date) => {
+  return date.toISOString().split('T')[0].replace(/-/g, '');
+};
+
+const fetchPrices = async (date) => {
+  const formattedDate = formatDate(date);
+  const originalUrl = `https://www.omie.es/pt/file-download?parents%5B0%5D=marginalpdbcpt&filename=marginalpdbcpt_${formattedDate}.1`;
+  const corsProxyUrl = 'https://cors-anywhere.herokuapp.com/';
+  const url = corsProxyUrl + originalUrl;
+  console.log(url)
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    console.log(response)
+    const text = await response.text();
+    console.log('Raw API response:', text);
+
+    const lines = text.split('\n');
+    const prices = lines.slice(1, -1).map(line => {
+      const [year, month, day, hour, ptPrice, esPrice] = line.split(';');
+      const price = parseFloat(ptPrice) / 1000; // Convert to €/kWh
+      if (isNaN(price)) {
+        console.warn(`Invalid price for hour ${hour}: ${ptPrice}`);
+        return null; // or return a default value like { hour: parseInt(hour) - 1, price: 0 }
+      }
+      return {
+        hour: parseInt(hour) - 1, // Adjust hour to 0-23 range
+        price: price
+      };
+    }).filter(item => item !== null); // Remove any null entries;
+    console.log('Fetched and transformed prices:', prices);
+    return prices;
+  } catch (error) {
+    console.error('Error fetching prices:', error);
+    return null;
+  }
 };
 
 const getColor = (price, isDark) => {
@@ -55,42 +88,93 @@ const getTickColor = (price) => {
 };
 
 const App = () => {
-  const [todayPrices, setTodayPrices] = useState(generatePrices());
-  const [tomorrowPrices, setTomorrowPrices] = useState(generatePrices());
+  const [todayPrices, setTodayPrices] = useState([]);
+  const [tomorrowPrices, setTomorrowPrices] = useState([]);
   const [selectedDay, setSelectedDay] = useState('today');
   const [selectedPrice, setSelectedPrice] = useState(null);
   const [selectedHour, setSelectedHour] = useState(null);
   const [showMWh, setShowMWh] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const chartRef = useRef(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    const currentHour = new Date().getHours();
-    setSelectedHour(currentHour);
-    setSelectedPrice(todayPrices[currentHour].price);
+    const fetchData = async () => {
+      try {
+        setIsLoading(true); // Assume you've added this state
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+  
+        const todayData = await fetchPrices(today);
+        const tomorrowData = await fetchPrices(tomorrow);
+  
+        console.log('Today\'s data:', todayData);
+        console.log('Tomorrow\'s data:', tomorrowData);
+  
+        if (todayData) setTodayPrices(todayData);
+        if (tomorrowData) setTomorrowPrices(tomorrowData);
+  
+        const currentHour = today.getHours();
+        setSelectedHour(currentHour);
+        console.log('todayData', todayData)
+        setSelectedPrice(todayData ? todayData[currentHour].price : null);
+  
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Error in fetchData:', error);
+        setError(error); // Assume you've added this state
+        setIsLoading(false);
+      }
+    };
+  
+    fetchData();
   }, []);
+
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
 
   const handleDayChange = (day) => {
     setSelectedDay(day);
     const prices = day === 'today' ? todayPrices : tomorrowPrices;
-    setSelectedPrice(prices[selectedHour || 0].price);
+    setSelectedPrice(prices[selectedHour || 0]?.price);
   };
 
   const handleChartClick = (data) => {
     if (data && data.activePayload) {
       setSelectedPrice(data.activePayload[0].payload.price);
       setSelectedHour(data.activePayload[0].payload.hour);
-     }
+    }
   };
 
   const prices = selectedDay === 'today' ? todayPrices : tomorrowPrices;
-  const averagePrice = prices.reduce((sum, price) => sum + price.price, 0) / prices.length;
-  const minPrice = Math.min(...prices.map(p => p.price));
-  const maxPrice = Math.max(...prices.map(p => p.price));
-  const minPriceHour = prices.findIndex(p => p.price === minPrice);
-  const maxPriceHour = prices.findIndex(p => p.price === maxPrice);
+  const averagePrice = prices.length > 0 
+    ? prices.reduce((sum, price) => {
+        const priceValue = parseFloat(price.price);
+        return isNaN(priceValue) ? sum : sum + priceValue;
+      }, 0) / prices.length 
+    : 0;
+
+  const minPrice = prices.length > 0 
+    ? Math.min(...prices.map(p => parseFloat(p.price)).filter(price => !isNaN(price))) 
+    : 0;
+
+  const maxPrice = prices.length > 0 
+    ? Math.max(...prices.map(p => parseFloat(p.price)).filter(price => !isNaN(price))) 
+    : 0;
+
+  const minPriceHour = prices.findIndex(p => parseFloat(p.price) === minPrice);
+  const maxPriceHour = prices.findIndex(p => parseFloat(p.price) === maxPrice);
+
+  console.log('Average Price:', averagePrice);
+  console.log('Min Price:', minPrice);
+  console.log('Max Price:', maxPrice);
+  console.log('Min Price Hour:', minPriceHour);
+  console.log('Max Price Hour:', maxPriceHour);
 
   const formatPrice = (price) => {
+    if (isNaN(price)) return 'N/A';
     const convertedPrice = showMWh ? price * 1000 : price;
     return convertedPrice.toFixed(showMWh ? 2 : 4);
   };
@@ -190,7 +274,7 @@ const App = () => {
             <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               {selectedDay === 'today' ? 'Today' : 'Tomorrow'}, {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
             </p>
-            <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>day average</p>
+            <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>Day Average</p>
             <p className="text-2xl font-bold mt-0">{formatPrice(averagePrice)}</p>
             <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>€ / {showMWh ? 'MWh' : 'kWh'}</p>
           </div>
@@ -214,8 +298,8 @@ const App = () => {
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: isDarkMode ? '#9CA3AF' : '#4B5563', fontSize: 10 }}
-                  tickFormatter={(value) => formatPrice(value)}
-                  ticks={[minPrice, averagePrice, maxPrice]}
+                  tickFormatter={(value) => isNaN(value) ? '' : formatPrice(value)}
+                  ticks={[minPrice, averagePrice, maxPrice].filter(value => !isNaN(value))}
                   width={45}
                 />
                 <Tooltip content={<CustomTooltip />} />
