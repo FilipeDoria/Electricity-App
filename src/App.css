@@ -36,3 +36,23 @@
     transform: rotate(360deg);
   }
 }
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 3.5rem; /* w-14 */
+  height: 2rem; /* h-8 */
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #d1d5db; /* bg-gray-300 */
+  transition: all 0.3s ease; /* transition duration-300 */
+  border-radius: 9999px; /* rounded-full */
+}
+

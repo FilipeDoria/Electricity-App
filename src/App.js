@@ -1,37 +1,13 @@
-/* import logo from './logo.svg';
-import './App.css';
-
-function App() {
-  return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
-  );
-}
-
-export default App; */
-
 import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import { Moon, Sun } from 'lucide-react';
 import { Switch } from './switch';
+import './App.css';
 
 const THRESHOLD_PRICE = 0.009; // €/kWh
 const YELLOW_THRESHOLD = THRESHOLD_PRICE * 1.25;
 const RED_THRESHOLD = THRESHOLD_PRICE * 1.5;
+const EXTRA_TARIFF = 0.065; // €/kWh
 
 const formatDate = (date) => {
   return date.toISOString().split('T')[0].replace(/-/g, '');
@@ -56,14 +32,16 @@ const fetchPrices = async (date) => {
     const lines = text.split('\n');
     const prices = lines.slice(1, -1).map(line => {
       const [year, month, day, hour, ptPrice, esPrice] = line.split(';');
-      const price = parseFloat(ptPrice) / 1000; // Convert to €/kWh
-      if (isNaN(price)) {
-        console.warn(`Invalid price for hour ${hour}: ${ptPrice}`);
-        return null; // or return a default value like { hour: parseInt(hour) - 1, price: 0 }
+      const ptPriceFloat = parseFloat(ptPrice) / 1000; // Convert to €/kWh
+      const esPriceFloat = parseFloat(esPrice) / 1000; // Convert to €/kWh
+      if (isNaN(ptPriceFloat) || isNaN(esPriceFloat)) {
+        console.warn(`Invalid price for hour ${hour}: ${ptPrice}, ${esPrice}`);
+        return null; // or return a default value like { hour: parseInt(hour) - 1, ptPrice: 0, esPrice: 0 }
       }
       return {
         hour: parseInt(hour) - 1, // Adjust hour to 0-23 range
-        price: price
+        ptPrice: ptPriceFloat,
+        esPrice: esPriceFloat
       };
     }).filter(item => item !== null); // Remove any null entries;
     console.log('Fetched and transformed prices:', prices);
@@ -94,15 +72,17 @@ const App = () => {
   const [selectedPrice, setSelectedPrice] = useState(null);
   const [selectedHour, setSelectedHour] = useState(null);
   const [showMWh, setShowMWh] = useState(false);
+  const [includeTariff, setIncludeTariff] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const chartRef = useRef(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [showEsPrices, setShowEsPrices] = useState(false);
   const [error, setError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const chartRef = useRef(null);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        setIsLoading(true); // Assume you've added this state
+        setIsLoading(true);
         const today = new Date();
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
@@ -110,21 +90,22 @@ const App = () => {
         const todayData = await fetchPrices(today);
         const tomorrowData = await fetchPrices(tomorrow);
   
-        console.log('Today\'s data:', todayData);
-        console.log('Tomorrow\'s data:', tomorrowData);
-  
         if (todayData) setTodayPrices(todayData);
         if (tomorrowData) setTomorrowPrices(tomorrowData);
-  
+        
+        if (!todayData && !tomorrowData) {
+          setError("No price data is currently available.");
+        } else {
+          setError(null);
+        }  
+
         const currentHour = today.getHours();
         setSelectedHour(currentHour);
-        console.log('todayData', todayData)
-        setSelectedPrice(todayData ? todayData[currentHour].price : null);
+        setSelectedPrice(todayData ? todayData[currentHour].ptPrice : null);
   
         setIsLoading(false);
       } catch (error) {
-        console.error('Error in fetchData:', error);
-        setError(error); // Assume you've added this state
+        setError(error);
         setIsLoading(false);
       }
     };
@@ -138,34 +119,27 @@ const App = () => {
   const handleDayChange = (day) => {
     setSelectedDay(day);
     const prices = day === 'today' ? todayPrices : tomorrowPrices;
-    setSelectedPrice(prices[selectedHour || 0]?.price);
+    setSelectedPrice(prices[selectedHour || 0]?.ptPrice);
   };
 
   const handleChartClick = (data) => {
     if (data && data.activePayload) {
-      setSelectedPrice(data.activePayload[0].payload.price);
+      setSelectedPrice(data.activePayload[0].payload.ptPrice);
       setSelectedHour(data.activePayload[0].payload.hour);
     }
   };
 
   const prices = selectedDay === 'today' ? todayPrices : tomorrowPrices;
-  const averagePrice = prices.length > 0 
-    ? prices.reduce((sum, price) => {
-        const priceValue = parseFloat(price.price);
-        return isNaN(priceValue) ? sum : sum + priceValue;
-      }, 0) / prices.length 
+  const adjustedPrices = includeTariff ? prices.map(p => ({ ...p, ptPrice: p.ptPrice + EXTRA_TARIFF, esPrice: p.esPrice + EXTRA_TARIFF })) : prices;
+
+  const averagePrice = adjustedPrices.length > 0 
+    ? adjustedPrices.reduce((sum, price) => sum + price.ptPrice, 0) / adjustedPrices.length 
     : 0;
 
-  const minPrice = prices.length > 0 
-    ? Math.min(...prices.map(p => parseFloat(p.price)).filter(price => !isNaN(price))) 
-    : 0;
-
-  const maxPrice = prices.length > 0 
-    ? Math.max(...prices.map(p => parseFloat(p.price)).filter(price => !isNaN(price))) 
-    : 0;
-
-  const minPriceHour = prices.findIndex(p => parseFloat(p.price) === minPrice);
-  const maxPriceHour = prices.findIndex(p => parseFloat(p.price) === maxPrice);
+  const minPrice = adjustedPrices.length > 0 ? Math.min(...adjustedPrices.map(p => p.ptPrice)) : 0;
+  const maxPrice = adjustedPrices.length > 0 ? Math.max(...adjustedPrices.map(p => p.ptPrice)) : 0;
+  const minPriceHour = adjustedPrices.findIndex(p => p.ptPrice === minPrice);
+  const maxPriceHour = adjustedPrices.findIndex(p => p.ptPrice === maxPrice);
 
   console.log('Average Price:', averagePrice);
   console.log('Min Price:', minPrice);
@@ -207,6 +181,14 @@ const App = () => {
     </div>
   );
 
+  const getFormattedDate = (day) => {
+    const date = new Date();
+    if (day === 'tomorrow') {
+      date.setDate(date.getDate() + 1);
+    }
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
   const ColorCodedTicks = ({ data, width, height }) => {
     const tickHeight = 4;
     const tickWidth = width / 24;
@@ -220,19 +202,83 @@ const App = () => {
             y={height - tickHeight}
             width={tickWidth}
             height={tickHeight}
-            fill={getTickColor(entry.price)}
+            fill={getTickColor(entry.ptPrice)}
           />
         ))}
       </g>
     );
   };
 
+  const CustomXAxis = ({
+    dataKey = "hour",
+    tickFormatter = (hour) => `${hour}h`,
+    interval = 1,
+    axisLine = { stroke: isDarkMode ? '#4B5563' : '#D1D5DB' },
+    tick = { fill: isDarkMode ? '#9CA3AF' : '#4B5563', fontSize: 10 }
+  }) => (
+    <XAxis
+      dataKey={dataKey}
+      tickFormatter={tickFormatter}
+      interval={interval}
+      axisLine={axisLine}
+      tick={tick}
+    />
+  );
+
+  const CustomYAxis = ({
+    domain = [minPrice, maxPrice],
+    axisLine = false,
+    tickLine = false,
+    tick = { fill: isDarkMode ? '#9CA3AF' : '#4B5563', fontSize: 10 },
+    tickFormatter = (value) => formatPrice(value),
+    width = 45
+  }) => (
+    <YAxis
+      domain={domain}
+      axisLine={axisLine}
+      tickLine={tickLine}
+      tick={tick}
+      tickFormatter={tickFormatter}
+      width={width}
+    />
+  );
+
+  const CustomReferenceLine = ({
+    y = averagePrice,
+    stroke = isDarkMode ? '#9CA3AF' : '#4B5563',
+    strokeDasharray = "3 3"
+  }) => (
+    <ReferenceLine
+      y={y}
+      stroke={stroke}
+      strokeDasharray={strokeDasharray}
+    />
+  );
+
+  const CustomReferenceArea = ({
+    x1 = 0,
+    x2 = 1,
+    y1 = 0,
+    y2 = 0,
+    fill = getColor(0, isDarkMode),
+    fillOpacity = 0.3
+  }) => (
+    <ReferenceArea
+      x1={x1}
+      x2={x2}
+      y1={y1}
+      y2={y2}
+      fill={fill}
+      fillOpacity={fillOpacity}
+    />
+  );
+
   return (
     <div className={`max-w-xl mx-auto p-4 ${isDarkMode ? 'bg-black' : 'bg-gray-100'}`}>
       <div className={`${isDarkMode ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'} rounded-lg shadow-md`}>
         <div className={`flex justify-between items-center p-2 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
           <div className="flex items-center space-x-2">
-            <span className="text-xs">{showMWh ? '€/MWh' : '€/kWh'}</span>
+            <span className="text-xs font-bold">{showMWh ? '€/MWh' : '€/kWh'}</span>
             <Switch 
               checked={showMWh}
               onCheckedChange={setShowMWh}
@@ -272,66 +318,85 @@ const App = () => {
           </div>
           <div className="text-center mb-2">
             <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              {selectedDay === 'today' ? 'Today' : 'Tomorrow'}, {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+              {getFormattedDate(selectedDay)}
             </p>
-            <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>Day Average</p>
+            <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>day average</p>
             <p className="text-2xl font-bold mt-0">{formatPrice(averagePrice)}</p>
             <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>€ / {showMWh ? 'MWh' : 'kWh'}</p>
           </div>
-          <div className="relative" ref={chartRef}>
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart
-                data={prices}
-                onClick={handleChartClick}
-                margin={{ top: 5, right: 5, left: 0, bottom: 40 }}
-              >
-                <XAxis 
-                  dataKey="hour" 
-                  tickFormatter={(hour) => `${hour}h`}
-                  interval={0}
-                  axisLine={{ stroke: isDarkMode ? '#4B5563' : '#D1D5DB' }}
-                  tick={{ fill: isDarkMode ? '#9CA3AF' : '#4B5563', fontSize: 10 }}
-                  ticks={[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24]}
-                />
-                <YAxis 
-                  domain={[minPrice, maxPrice]}
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: isDarkMode ? '#9CA3AF' : '#4B5563', fontSize: 10 }}
-                  tickFormatter={(value) => isNaN(value) ? '' : formatPrice(value)}
-                  ticks={[minPrice, averagePrice, maxPrice].filter(value => !isNaN(value))}
-                  width={45}
-                />
-                <Tooltip content={<CustomTooltip />} />
-                <ReferenceLine y={averagePrice} stroke={isDarkMode ? '#9CA3AF' : '#4B5563'} strokeDasharray="3 3" />
-                {prices.map((entry, index) => (
-                  <ReferenceArea
-                    key={`area-${index}`}
-                    x1={index}
-                    x2={index + 1}
-                    y1={0}
-                    y2={entry.price}
-                    fill={getColor(entry.price, isDarkMode)}
-                    fillOpacity={0.3}
+          {error ? (
+            <div className="text-red-500 text-center">{error}</div>
+          ) : (
+            <div className="relative" ref={chartRef}>
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart
+                  data={adjustedPrices}
+                  onClick={handleChartClick}
+                  margin={{ top: 5, right: 30, left: 0, bottom: 40 }}
+                >
+                  <CustomXAxis />
+                  <CustomYAxis />
+                  <Tooltip content={<CustomTooltip />} />
+                  <CustomReferenceLine />
+                  {adjustedPrices.map((entry, index) => (
+                    <CustomReferenceArea
+                      key={`area-${index}`}
+                      x1={index}
+                      x2={index + 1}
+                      y1={0}
+                      y2={entry.ptPrice}
+                      fill={getColor(entry.ptPrice, isDarkMode)}
+                      fillOpacity={0.3}
+                    />
+                  ))}
+                  <Line 
+                    type="monotone" 
+                    dataKey="ptPrice" 
+                    stroke={isDarkMode ? '#10B981' : '#059669'}
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 6, fill: isDarkMode ? '#10B981' : '#059669' }}
                   />
-                ))}
-                <Line 
-                  type="monotone" 
-                  dataKey="price" 
-                  stroke={isDarkMode ? '#10B981' : '#059669'}
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 6, fill: isDarkMode ? '#10B981' : '#059669' }}
-                />
-                <ColorCodedTicks data={prices} width={500} height={200} />
-              </LineChart>
-            </ResponsiveContainer>
-            <FloatingBubble 
-              minPrice={minPrice}
-              maxPrice={maxPrice}
-              minPriceHour={minPriceHour}
-              maxPriceHour={maxPriceHour}
-            />
+                  {showEsPrices && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="esPrice" 
+                      stroke={isDarkMode ? '#EF4444' : '#DC2626'}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 6, fill: isDarkMode ? '#EF4444' : '#DC2626' }}
+                    />
+                  )}
+                </LineChart>
+              </ResponsiveContainer>
+              <FloatingBubble 
+                minPrice={minPrice}
+                maxPrice={maxPrice}
+                minPriceHour={minPriceHour}
+                maxPriceHour={maxPriceHour}
+              />
+            </div>
+          )}
+          <div className="mt-4 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold">Include Tariff</span>
+              <Switch 
+                checked={includeTariff}
+                onCheckedChange={setIncludeTariff}
+                size="sm"
+              />
+            </div>
+            <span className="text-xs">{includeTariff ? `+${EXTRA_TARIFF.toFixed(4)} €/kWh` : 'Excluded'}</span>
+          </div>
+          <div className="mt-4 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold">Show Spanish Prices</span>
+              <Switch 
+                checked={showEsPrices}
+                onCheckedChange={setShowEsPrices}
+                size="sm"
+              />
+            </div>
           </div>
         </div>
       </div>
